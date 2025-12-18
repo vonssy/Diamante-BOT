@@ -1,0 +1,5 @@
+curl-cffi==0.10.0
+fake-useragent==1.5.1
+eth-account==0.13.7
+colorama==0.4.6
+pytz==2024.1
