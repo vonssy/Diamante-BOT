@@ -21,8 +21,6 @@ class Diamante:
         self.user_id = {}
         self.tf_count = 0
         self.tf_amount = 0
-        self.min_delay = 0
-        self.max_delay = 0
 
     def clear_terminal(self):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -140,20 +138,20 @@ class Diamante:
         except Exception as e:
             return None
         
-    async def print_timer(self):
-        for remaining in range(random.randint(self.min_delay, self.max_delay), 0, -1):
+    async def print_timer(self, min_delay, max_delay):
+        for remaining in range(random.randint(min_delay, max_delay), 0, -1):
             print(
                 f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
                 f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
                 f"{Fore.BLUE + Style.BRIGHT}Wait For{Style.RESET_ALL}"
                 f"{Fore.WHITE + Style.BRIGHT} {remaining} {Style.RESET_ALL}"
-                f"{Fore.BLUE + Style.BRIGHT}Seconds For Next Tx...{Style.RESET_ALL}",
+                f"{Fore.BLUE + Style.BRIGHT}Seconds For Prepare Tx...{Style.RESET_ALL}",
                 end="\r",
                 flush=True
             )
             await asyncio.sleep(1)
         
-    def print_transfer_question(self):
+    def print_question(self):
         while True:
             try:
                 tf_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Transfer Count -> {Style.RESET_ALL}").strip())
@@ -176,32 +174,6 @@ class Diamante:
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
 
-    def print_delay_question(self):
-        while True:
-            try:
-                min_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Min Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                if min_delay >= 0:
-                    self.min_delay = min_delay
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}Min Delay must be >= 0.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-        while True:
-            try:
-                max_delay = int(input(f"{Fore.YELLOW + Style.BRIGHT}Max Delay For Each Tx -> {Style.RESET_ALL}").strip())
-                if max_delay >= min_delay:
-                    self.max_delay = max_delay
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}Max Delay must be >= Min Delay.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-    def print_question(self):
-        self.print_transfer_question()
-        self.print_delay_question()
         while True:
             try:
                 print(f"{Fore.WHITE + Style.BRIGHT}1. Run With Proxy{Style.RESET_ALL}")
@@ -555,6 +527,8 @@ class Diamante:
                     )
                     return
                 
+                await self.print_timer(63, 65, "Prepare Tx")
+                
                 transfer = await self.perform_transfer(address, recepient, proxy)
                 if transfer:
 
@@ -564,7 +538,7 @@ class Diamante:
 
                         self.log(
                             f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
-                            f"{Fore.GREEN+Style.BRIGHT} {tx_status} {Style.RESET_ALL}"
+                            f"{Fore.GREEN+Style.BRIGHT} {tx_status} {Style.RESET_ALL}                           "
                         )
                         self.log(
                             f"{Fore.BLUE+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
@@ -581,8 +555,6 @@ class Diamante:
                             f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                             f"{Fore.YELLOW+Style.BRIGHT} {transfer['message']} {Style.RESET_ALL}"
                         )
-
-                await self.print_timer()
 
     async def main(self):
         try:
@@ -625,7 +597,7 @@ class Diamante:
 
                         self.cookie_headers[address] = "access_token="
                         self.device_id[address] = self.generate_device_id()
-                        user_agent = FakeUserAgent(browsers=["chrome", "edge", "firefox"], os="windows").random
+                        user_agent = FakeUserAgent(browsers=["chrome"], os="windows").random
 
                         self.HEADERS[address] = {
                             "Accept": "application/json, text/plain, */*",
