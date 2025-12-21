@@ -295,13 +295,13 @@ class Diamante:
                 response = await asyncio.to_thread(requests.get, url=url, headers=headers, proxies=proxies, timeout=120, impersonate="chrome120")
                 response.raise_for_status()
                 result = response.json()
-                if "status" in result and result.get("status") == 429:
+                if "status" in result and result.get("status") == 429 or result.get("message") == "Something went wrong":
                     if attempt < retries - 1:
                         self.log(
                             f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
                             f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}/{retries}] Request Failed: {result['message']} {Style.RESET_ALL}"
                         )
-                        await asyncio.sleep(15)
+                        await asyncio.sleep(60)
                         continue
                 return result
             except Exception as e:
