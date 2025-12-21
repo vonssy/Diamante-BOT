@@ -527,7 +527,7 @@ class Diamante:
                     )
                     return
                 
-                await self.print_timer(63, 65, "Prepare Tx")
+                await self.print_timer(63, 65)
                 
                 transfer = await self.perform_transfer(address, recepient, proxy)
                 if transfer:
