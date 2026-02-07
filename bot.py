@@ -1,27 +1,36 @@
-from curl_cffi import requests
+from curl_cffi.requests import AsyncSession
 from fake_useragent import FakeUserAgent
 from http.cookies import SimpleCookie
 from eth_account import Account
+from dotenv import load_dotenv
 from datetime import datetime
 from colorama import *
-import asyncio, random, string, secrets, json, os, pytz
+import asyncio, random, secrets, string, pytz, sys, re, os
+
+load_dotenv()
 
 wib = pytz.timezone('Asia/Jakarta')
 
 class Diamante:
     def __init__(self) -> None:
-        self.BASE_API = "https://campapi.diamante.io/api/v1"
-        self.EXPLORER = "https://sentinel.diamante.io/#/tx/"
+        self.API_URL = {
+            "campaign": "https://campapi.diamante.io/api/v1",
+            "explorer": "https://sentinel.diamante.io/#/tx/",
+        }
+
+        self.TRANSFER_COUNT = int(os.getenv("TRANSFER_COUNT") or "10")
+        self.TRANSFER_AMOUNT = int(os.getenv("TRANSFER_AMOUNT") or "1")
+        self.TRANSFER_FEE = 0.001
+
+        self.USE_PROXY = False
+        self.ROTATE_PROXY = False
+
         self.HEADERS = {}
         self.proxies = []
         self.proxy_index = 0
         self.account_proxies = {}
-        self.cookie_headers = {}
-        self.device_id = {}
-        self.user_id = {}
-        self.tf_count = 0
-        self.tf_amount = 0
-
+        self.accounts = {}
+        
     def clear_terminal(self):
         os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -35,7 +44,7 @@ class Diamante:
     def welcome(self):
         print(
             f"""
-        {Fore.GREEN + Style.BRIGHT}Diam Testnet {Fore.BLUE + Style.BRIGHT}Auto BOT
+        {Fore.GREEN + Style.BRIGHT}Diamante {Fore.BLUE + Style.BRIGHT}Auto BOT
             """
             f"""
         {Fore.GREEN + Style.BRIGHT}Rey? {Fore.YELLOW + Style.BRIGHT}<INI WATERMARK>
@@ -47,7 +56,17 @@ class Diamante:
         minutes, seconds = divmod(remainder, 60)
         return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
     
-    async def load_proxies(self):
+    def load_accounts(self):
+        filename = "accounts.txt"
+        try:
+            with open(filename, 'r') as file:
+                accounts = [line.strip() for line in file if line.strip()]
+            return accounts
+        except Exception as e:
+            print(f"{Fore.RED + Style.BRIGHT}Failed To Load Accounts: {e}{Style.RESET_ALL}")
+            return None
+        
+    def load_proxies(self):
         filename = "proxy.txt"
         try:
             if not os.path.exists(filename):
@@ -74,7 +93,7 @@ class Diamante:
         if any(proxies.startswith(scheme) for scheme in schemes):
             return proxies
         return f"http://{proxies}"
-
+    
     def get_next_proxy_for_account(self, account):
         if account not in self.account_proxies:
             if not self.proxies:
@@ -91,17 +110,56 @@ class Diamante:
         self.account_proxies[account] = proxy
         self.proxy_index = (self.proxy_index + 1) % len(self.proxies)
         return proxy
-        
-    def generate_address(self, account: str):
-        try:
-            account = Account.from_key(account)
-            address = account.address
+    
+    def display_proxy(self, proxy_url=None):
+        if not proxy_url: return "No Proxy"
 
+        proxy_url = re.sub(r"^(http|https|socks4|socks5)://", "", proxy_url)
+
+        if "@" in proxy_url:
+            proxy_url = proxy_url.split("@", 1)[1]
+
+        return proxy_url
+    
+    def initialize_headers(self, address: str):
+        if address not in self.HEADERS:
+
+            user_agent = FakeUserAgent(
+                browsers=["chrome"], os="windows"
+            ).random
+
+            self.HEADERS[address] = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Access-Token": "key",
+                "Cache-Control": "no-cache",
+                "Origin": "https://campaign.diamante.io",
+                "Pragma": "no-cache",
+                "Referer": "https://campaign.diamante.io/",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site",
+                "User-Agent": user_agent
+            }
+
+        return self.HEADERS[address].copy()
+    
+    def generate_address(self, private_key: str):
+        try:
+            acc = Account.from_key(private_key)
+            address = acc.address
             return address
         except Exception as e:
+            self.log(
+                f"{Fore.CYAN+Style.BRIGHT}Status  :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Generate Address Failed {Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
+            )
             return None
         
-    def generate_random_recepient(self):
+    def generate_random_recipient(self):
         return "0x" + secrets.token_hex(20)
         
     def generate_device_id(self):
@@ -113,7 +171,7 @@ class Diamante:
         try:
             return {
                 "address": address,
-                "deviceId": self.device_id[address],
+                "deviceId": self.accounts[address]["deviceId"],
                 "deviceSource": "web_app",
                 "deviceType": "Windows",
                 "browser": "Chrome",
@@ -130,7 +188,7 @@ class Diamante:
             }
         except Exception as e:
             raise Exception(f"Generate Req Payload Failed: {str(e)}")
-
+        
     def mask_account(self, account):
         try:
             mask_account = account[:6] + '*' * 6 + account[-6:]
@@ -154,28 +212,6 @@ class Diamante:
     def print_question(self):
         while True:
             try:
-                tf_count = int(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Transfer Count -> {Style.RESET_ALL}").strip())
-                if tf_count > 0:
-                    self.tf_count = tf_count
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}Please enter positive number.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-        while True:
-            try:
-                tf_amount = float(input(f"{Fore.YELLOW + Style.BRIGHT}Enter Transfer Amount [Min. 1] -> {Style.RESET_ALL}").strip())
-                if tf_amount >= 1:
-                    self.tf_amount = tf_amount
-                    break
-                else:
-                    print(f"{Fore.RED + Style.BRIGHT}Amount must be >= 1 DIAM.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number.{Style.RESET_ALL}")
-
-        while True:
-            try:
                 print(f"{Fore.WHITE + Style.BRIGHT}1. Run With Proxy{Style.RESET_ALL}")
                 print(f"{Fore.WHITE + Style.BRIGHT}2. Run Without Proxy{Style.RESET_ALL}")
                 proxy_choice = int(input(f"{Fore.BLUE + Style.BRIGHT}Choose [1/2] -> {Style.RESET_ALL}").strip())
@@ -186,31 +222,38 @@ class Diamante:
                         "Without"
                     )
                     print(f"{Fore.GREEN + Style.BRIGHT}Run {proxy_type} Proxy Selected.{Style.RESET_ALL}")
+                    self.USE_PROXY = True if proxy_choice == 1 else False
                     break
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Please enter either 1 or 2.{Style.RESET_ALL}")
             except ValueError:
                 print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter a number (1 or 2).{Style.RESET_ALL}")
 
-        rotate_proxy = False
-        if proxy_choice == 1:
+        if self.USE_PROXY:
             while True:
                 rotate_proxy = input(f"{Fore.BLUE + Style.BRIGHT}Rotate Invalid Proxy? [y/n] -> {Style.RESET_ALL}").strip()
-
                 if rotate_proxy in ["y", "n"]:
-                    rotate_proxy = rotate_proxy == "y"
+                    self.ROTATE_PROXY = True if rotate_proxy == "y" else False
                     break
                 else:
                     print(f"{Fore.RED + Style.BRIGHT}Invalid input. Enter 'y' or 'n'.{Style.RESET_ALL}")
 
-        return proxy_choice, rotate_proxy
+    def ensure_ok(self, response):
+        if response.status_code >= 400:
+            error_text = response.text
+            raise Exception(f"HTTP {response.status_code}: {error_text}")
     
     async def check_connection(self, proxy_url=None):
-        proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+        url = "https://api.ipify.org?format=json"
+
+        proxies = {
+            "http": proxy_url, "https": proxy_url
+        } if proxy_url else None
         try:
-            response = await asyncio.to_thread(requests.get, url="https://api.ipify.org?format=json", proxies=proxies, timeout=120, impersonate="chrome120")
-            response.raise_for_status()
-            return True
+            async with AsyncSession(proxies=proxies, timeout=30, impersonate="chrome120") as session:
+                response = await session.get(url=url)
+                self.ensure_ok(response)
+                return True
         except Exception as e:
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}Status  :{Style.RESET_ALL}"
@@ -222,36 +265,36 @@ class Diamante:
         return None
     
     async def connect_wallet(self, address: str, proxy_url=None, retries=5):
-        url = f"{self.BASE_API}/user/connect-wallet"
-        data = json.dumps(self.generate_payload(address))
-        headers = {
-            **self.HEADERS[address],
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json",
-            "Cookie": self.cookie_headers[address]
-        }
+        url = f"{self.API_URL['campaign']}/user/connect-wallet"
+        
         for attempt in range(retries):
-            proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+            proxies = {
+                "http": proxy_url, "https": proxy_url
+            } if proxy_url else None
             try:
-                response = await asyncio.to_thread(requests.post, url=url, headers=headers, data=data, proxies=proxies, timeout=120, impersonate="chrome120")
-                response.raise_for_status()
-                result = response.json()
+                headers = self.initialize_headers(address)
+                headers["Content-Type"] = "application/json"
+                payload = self.generate_payload(address)
 
-                raw_cookies = response.headers.get_list('Set-Cookie', [])
-                if raw_cookies:
-                    cookie = SimpleCookie()
-                    cookie.load("\n".join(raw_cookies))
-                    cookie_string = "; ".join([f"{key}={morsel.value}" for key, morsel in cookie.items()])
-                    self.cookie_headers[address] = cookie_string
+                async with AsyncSession(proxies=proxies, timeout=120, impersonate="chrome120") as session:
+                    response = await session.post(url=url, headers=headers, json=payload)
+                    self.ensure_ok(response)
 
-                    return result
+                    raw_cookies = response.headers.get_list('Set-Cookie', [])
+                    if raw_cookies:
+                        cookie = SimpleCookie()
+                        cookie.load("\n".join(raw_cookies))
+                        cookie_string = "; ".join([f"{key}={morsel.value}" for key, morsel in cookie.items()])
+                        self.accounts[address]["accessToken"] = cookie_string
+
+                        return response.json()
             except Exception as e:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
                     continue
                 self.log(
-                    f"{Fore.CYAN+Style.BRIGHT}Status  :{Style.RESET_ALL}"
-                    f"{Fore.RED+Style.BRIGHT} Login Failed {Style.RESET_ALL}"
+                    f"{Fore.CYAN+Style.BRIGHT}Login   :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Failed {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
                 )
@@ -259,24 +302,27 @@ class Diamante:
         return None
     
     async def get_user_status(self, address: str, proxy_url=None, retries=5):
-        url = f"{self.BASE_API}/auth/get-user-status/{self.user_id[address]}"
-        headers = {
-            **self.HEADERS[address],
-            "Cookie": self.cookie_headers[address]
-        }
+        url = f"{self.API_URL['campaign']}/auth/get-user-status/{self.accounts[address]['userId']}"
+        
         for attempt in range(retries):
-            proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+            proxies = {
+                "http": proxy_url, "https": proxy_url
+            } if proxy_url else None
             try:
-                response = await asyncio.to_thread(requests.get, url=url, headers=headers, proxies=proxies, timeout=120, impersonate="chrome120")
-                response.raise_for_status()
-                return response.json()
+                headers = self.initialize_headers(address)
+                headers["Cookie"] = self.accounts[address]["accessToken"]
+
+                async with AsyncSession(proxies=proxies, timeout=120, impersonate="chrome120") as session:
+                    response = await session.get(url=url, headers=headers)
+                    self.ensure_ok(response)
+                    return response.json()
             except Exception as e:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
                     continue
                 self.log(
                     f"{Fore.CYAN+Style.BRIGHT}Stats   :{Style.RESET_ALL}"
-                    f"{Fore.RED+Style.BRIGHT} Fetch Stats Failed {Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Failed to Fetch Data {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
                 )
@@ -284,26 +330,20 @@ class Diamante:
         return None
     
     async def fund_wallet(self, address: str, proxy_url=None, retries=5):
-        url = f"{self.BASE_API}/transaction/fund-wallet/{self.user_id[address]}"
-        headers = {
-            **self.HEADERS[address],
-            "Cookie": self.cookie_headers[address]
-        }
+        url = f"{self.API_URL['campaign']}/transaction/fund-wallet/{self.accounts[address]['userId']}"
+        
         for attempt in range(retries):
-            proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+            proxies = {
+                "http": proxy_url, "https": proxy_url
+            } if proxy_url else None
             try:
-                response = await asyncio.to_thread(requests.get, url=url, headers=headers, proxies=proxies, timeout=120, impersonate="chrome120")
-                response.raise_for_status()
-                result = response.json()
-                if "status" in result and result.get("status") == 429 or result.get("message") == "Something went wrong":
-                    if attempt < retries - 1:
-                        self.log(
-                            f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
-                            f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}/{retries}] Request Failed: {result['message']} {Style.RESET_ALL}"
-                        )
-                        await asyncio.sleep(60)
-                        continue
-                return result
+                headers = self.initialize_headers(address)
+                headers["Cookie"] = self.accounts[address]["accessToken"]
+
+                async with AsyncSession(proxies=proxies, timeout=120, impersonate="chrome120") as session:
+                    response = await session.get(url=url, headers=headers)
+                    self.ensure_ok(response)
+                    return response.json()
             except Exception as e:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
@@ -318,58 +358,54 @@ class Diamante:
         return None
     
     async def get_balance(self, address: str, proxy_url=None, retries=5):
-        url = f"{self.BASE_API}/transaction/get-balance/{self.user_id[address]}"
-        headers = {
-            **self.HEADERS[address],
-            "Cookie": self.cookie_headers[address]
-        }
+        url = f"{self.API_URL['campaign']}/transaction/get-balance/{self.accounts[address]['userId']}"
+        
         for attempt in range(retries):
-            proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+            proxies = {
+                "http": proxy_url, "https": proxy_url
+            } if proxy_url else None
             try:
-                response = await asyncio.to_thread(requests.get, url=url, headers=headers, proxies=proxies, timeout=120, impersonate="chrome120")
-                response.raise_for_status()
-                return response.json()
+                headers = self.initialize_headers(address)
+                headers["Cookie"] = self.accounts[address]["accessToken"]
+
+                async with AsyncSession(proxies=proxies, timeout=120, impersonate="chrome120") as session:
+                    response = await session.get(url=url, headers=headers)
+                    self.ensure_ok(response)
+                    return response.json()
             except Exception as e:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
                     continue
                 self.log(
                     f"{Fore.BLUE+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
-                    f"{Fore.RED+Style.BRIGHT} Fetch DIAM Tokens Failed {Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Failed to Fetch DIAM Token Balance {Style.RESET_ALL}"
                     f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
                     f"{Fore.YELLOW+Style.BRIGHT} {str(e)} {Style.RESET_ALL}"
                 )
 
         return None
     
-    async def perform_transfer(self, address: str, recepient: str, proxy_url=None, retries=5):
-        url = f"{self.BASE_API}/transaction/transfer"
-        data = json.dumps({
-            "toAddress": recepient,
-            "amount": self.tf_amount,
-            "userId": self.user_id[address]
-        })
-        headers = {
-            **self.HEADERS[address],
-            "Content-Length": str(len(data)),
-            "Content-Type": "application/json",
-            "Cookie": self.cookie_headers[address]
-        }
+    async def perform_transfer(self, address: str, recipient: str, proxy_url=None, retries=5):
+        url = f"{self.API_URL['campaign']}/transaction/transfer"
+        
         for attempt in range(retries):
-            proxies = {"http":proxy_url, "https":proxy_url} if proxy_url else None
+            proxies = {
+                "http": proxy_url, "https": proxy_url
+            } if proxy_url else None
             try:
-                response = await asyncio.to_thread(requests.post, url=url, headers=headers, data=data, proxies=proxies, timeout=120, impersonate="chrome120")
-                response.raise_for_status()
-                result = response.json()
-                if "status" in result and result.get("status") == 429:
-                    if attempt < retries - 1:
-                        self.log(
-                            f"{Fore.BLUE + Style.BRIGHT}   Message  :{Style.RESET_ALL}"
-                            f"{Fore.YELLOW + Style.BRIGHT} [Attempt {attempt + 1}/{retries}] Txn Error: {result['message']} {Style.RESET_ALL}"
-                        )
-                        await asyncio.sleep(15)
-                        continue
-                return result
+                headers = self.initialize_headers(address)
+                headers["Content-Type"] = "application/json"
+                headers["Cookie"] = self.accounts[address]["accessToken"]
+                payload = {
+                    "toAddress": recipient,
+                    "amount": self.TRANSFER_AMOUNT,
+                    "userId": self.accounts[address]["userId"]
+                }
+
+                async with AsyncSession(proxies=proxies, timeout=120, impersonate="chrome120") as session:
+                    response = await session.post(url=url, headers=headers, json=payload)
+                    self.ensure_ok(response)
+                    return response.json()
             except Exception as e:
                 if attempt < retries - 1:
                     await asyncio.sleep(5)
@@ -383,238 +419,248 @@ class Diamante:
 
         return None
     
-    async def process_check_connection(self, address: str, use_proxy: bool, rotate_proxy: bool):
+    async def process_check_connection(self, address: str, proxy_url=None):
         while True:
-            proxy = self.get_next_proxy_for_account(address) if use_proxy else None
+            if self.USE_PROXY:
+                proxy_url = self.get_next_proxy_for_account(address)
+
             self.log(
                 f"{Fore.CYAN+Style.BRIGHT}Proxy   :{Style.RESET_ALL}"
-                f"{Fore.WHITE+Style.BRIGHT} {proxy} {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {self.display_proxy(proxy_url)} {Style.RESET_ALL}"
             )
 
-            is_valid = await self.check_connection(proxy)
-            if not is_valid:
-                if rotate_proxy:
-                    proxy = self.rotate_proxy_for_account(address)
-                    await asyncio.sleep(1)
-                    continue
+            is_valid = await self.check_connection(proxy_url)
+            if is_valid: return True
 
-                return False
+            if self.ROTATE_PROXY:
+                proxy_url = self.rotate_proxy_for_account(address)
+                await asyncio.sleep(1)
+                continue
 
-            return True
-    
-    async def process_connect_wallet(self, address: str, use_proxy: bool, rotate_proxy: bool):
-        is_valid = await self.process_check_connection(address, use_proxy, rotate_proxy)
-        if is_valid:
-            proxy = self.get_next_proxy_for_account(address) if use_proxy else None
+            return False
+        
+    async def process_connect_wallet(self, address: str, proxy_url=None):
+        is_valid = await self.process_check_connection(address, proxy_url)
+        if not is_valid: return False
 
-            connect = await self.connect_wallet(address, proxy)
-            if not connect: return
+        if self.USE_PROXY:
+            proxy_url = self.get_next_proxy_for_account(address)
 
-            if connect.get("message") == "Success":
-                self.user_id[address] = connect["data"]["userId"]
-                self.log(
-                    f"{Fore.CYAN + Style.BRIGHT}Status  :{Style.RESET_ALL}"
-                    f"{Fore.GREEN + Style.BRIGHT} Login Success {Style.RESET_ALL}"
-                )
-                return True
-            
+        connect = await self.connect_wallet(address, proxy_url)
+        if not connect: return False
+
+        if not connect.get("success"):
+            message = connect.get("message")
+
             self.log(
-                f"{Fore.CYAN+Style.BRIGHT}Status  :{Style.RESET_ALL}"
-                f"{Fore.RED+Style.BRIGHT} Login Failed {Style.RESET_ALL}"
+                f"{Fore.CYAN+Style.BRIGHT}Login   :{Style.RESET_ALL}"
+                f"{Fore.RED+Style.BRIGHT} Failed {Style.RESET_ALL}"
                 f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
-                f"{Fore.YELLOW+Style.BRIGHT} {connect['message']} {Style.RESET_ALL}"
+                f"{Fore.YELLOW+Style.BRIGHT} {message} {Style.RESET_ALL}"
             )
             return False
+        
+        self.accounts[address]["userId"] = connect["data"]["userId"]
 
-    async def process_accounts(self, address: str, use_proxy: bool, rotate_proxy: bool):
-        connected = await self.process_connect_wallet(address, use_proxy, rotate_proxy)
-        if connected:
-            proxy = self.get_next_proxy_for_account(address) if use_proxy else None
+        self.log(
+            f"{Fore.CYAN+Style.BRIGHT}Login   :{Style.RESET_ALL}"
+            f"{Fore.GREEN+Style.BRIGHT} Success {Style.RESET_ALL}"
+        )
+        
+        return True
+        
+    async def process_accounts(self, address: str, proxy_url=None):
+        connected = await self.process_connect_wallet(address, proxy_url)
+        if not connected: return False
 
-            stats = await self.get_user_status(address, proxy)
-            if stats:
+        if self.USE_PROXY:
+            proxy_url = self.get_next_proxy_for_account(address)
 
-                if stats.get("message") == "Success":
-                    testnet_address = stats.get("data", {}).get("testnetWalletAddress")
-                    txn_count = stats.get("data", {}).get("transactionCount")
-                    badge_count = stats.get("data", {}).get("badgeCount")
+        stats = await self.get_user_status(address, proxy_url)
+        if stats:
 
-                    self.log(f"{Fore.CYAN+Style.BRIGHT}Stats   :{Style.RESET_ALL}")
-                    self.log(
-                        f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
-                        f"{Fore.BLUE+Style.BRIGHT}DIAM Address:{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} {testnet_address} {Style.RESET_ALL}"
-                    )
-                    self.log(
-                        f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
-                        f"{Fore.BLUE+Style.BRIGHT}Txn Count   :{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} {txn_count} {Style.RESET_ALL}"
-                    )
-                    self.log(
-                        f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
-                        f"{Fore.BLUE+Style.BRIGHT}Badge Count :{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} {badge_count} {Style.RESET_ALL}"
-                    )
-
-                else:
-                    self.log(
-                        f"{Fore.CYAN+Style.BRIGHT}Stats   :{Style.RESET_ALL}"
-                        f"{Fore.RED+Style.BRIGHT} Fetch Stats Failed {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
-                        f"{Fore.YELLOW+Style.BRIGHT} {stats['message']} {Style.RESET_ALL}"
-                    )
-
-            fund = await self.fund_wallet(address, proxy)
-            if fund:
-
-                if fund.get("message") == "Success":
-                    self.log(
-                        f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
-                        f"{Fore.GREEN+Style.BRIGHT} Requested {Style.RESET_ALL}"
-                    )
-
-                else:
-                    self.log(
-                        f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
-                        f"{Fore.RED+Style.BRIGHT} Request Failed {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
-                        f"{Fore.YELLOW+Style.BRIGHT} {fund['message']} {Style.RESET_ALL}"
-                    )
-
-            self.log(f"{Fore.CYAN+Style.BRIGHT}Transfer:{Style.RESET_ALL}")
-            for i in range(self.tf_count):
+            if not stats.get("success"):
+                message = stats.get("message")
+                
                 self.log(
-                    f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
-                    f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT}{self.tf_count}{Style.RESET_ALL}                           "
+                    f"{Fore.CYAN+Style.BRIGHT}Stats   :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Failed to Fetch Data {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {message} {Style.RESET_ALL}"
                 )
+            else:
+                testnet_address = stats.get("data", {}).get("testnetWalletAddress")
+                txn_count = stats.get("data", {}).get("transactionCount")
+                badge_count = stats.get("data", {}).get("badgeCount")
 
-                recepient = self.generate_random_recepient()
+                self.log(f"{Fore.CYAN+Style.BRIGHT}Stats   :{Style.RESET_ALL}")
                 self.log(
-                    f"{Fore.BLUE+Style.BRIGHT}   Recepient:{Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT} {recepient} {Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                    f"{Fore.BLUE+Style.BRIGHT}DIAM Address:{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {testnet_address} {Style.RESET_ALL}"
                 )
                 self.log(
-                    f"{Fore.BLUE+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
-                    f"{Fore.WHITE+Style.BRIGHT} {self.tf_amount} DIAM {Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                    f"{Fore.BLUE+Style.BRIGHT}Txn Count   :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {txn_count} {Style.RESET_ALL}"
+                )
+                self.log(
+                    f"{Fore.GREEN+Style.BRIGHT} ● {Style.RESET_ALL}"
+                    f"{Fore.BLUE+Style.BRIGHT}Badge Count :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {badge_count} {Style.RESET_ALL}"
+                )
+                
+        fund = await self.fund_wallet(address, proxy_url)
+        if fund:
+
+            if not fund.get("success"):
+                message = fund.get("message")
+
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Request Failed {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {message} {Style.RESET_ALL}"
+                )
+            else:
+                self.log(
+                    f"{Fore.CYAN+Style.BRIGHT}Faucet  :{Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} Requested {Style.RESET_ALL}"
+                )
+            
+            await self.print_timer(63, 65)
+
+        self.log(f"{Fore.CYAN+Style.BRIGHT}Transfer:{Style.RESET_ALL}                           ")
+        for i in range(self.TRANSFER_COUNT):
+            self.log(
+                f"{Fore.MAGENTA+Style.BRIGHT} ● {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{i+1}{Style.RESET_ALL}"
+                f"{Fore.MAGENTA+Style.BRIGHT} Of {Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT}{self.TRANSFER_COUNT}{Style.RESET_ALL}                           "
+            )
+
+            recipient = self.generate_random_recipient()
+
+            self.log(
+                f"{Fore.BLUE+Style.BRIGHT}   Recipient:{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {recipient} {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.BLUE+Style.BRIGHT}   Amount   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {self.TRANSFER_AMOUNT} DIAM {Style.RESET_ALL}"
+            )
+            self.log(
+                f"{Fore.BLUE+Style.BRIGHT}   Tx Fee   :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {self.TRANSFER_FEE} DIAM {Style.RESET_ALL}"
+            )
+
+            balance = await self.get_balance(address, proxy_url)
+            if not balance: continue
+
+            if not balance.get("success"):
+                message = balance.get("message")
+
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Failed to Fetch DIAM Token Balance {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {message} {Style.RESET_ALL}"
+                )
+                continue
+
+            diam_tokens = balance.get("data", {}).get("balance")
+
+            self.log(
+                f"{Fore.BLUE+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
+                f"{Fore.WHITE+Style.BRIGHT} {diam_tokens} DIAM {Style.RESET_ALL}"
+            )
+            
+            if diam_tokens < self.TRANSFER_AMOUNT + self.TRANSFER_FEE:
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Insufficient DIAM Tokens Balance {Style.RESET_ALL}"
+                )
+                return
+            
+            transfer = await self.perform_transfer(address, recipient, proxy_url)
+            if not transfer: continue
+
+            if not transfer.get("success"):
+                message = transfer.get("message")
+
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                    f"{Fore.RED+Style.BRIGHT} Transfer Failed {Style.RESET_ALL}"
+                    f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
+                    f"{Fore.YELLOW+Style.BRIGHT} {message} {Style.RESET_ALL}"
+                )
+            else:
+                tx_hash = transfer.get("data", {}).get("transferData", {}).get("hash")
+                tx_status = transfer.get("data", {}).get("transferData", {}).get("status")
+                explorer = self.API_URL["explorer"]
+
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
+                    f"{Fore.GREEN+Style.BRIGHT} {tx_status} {Style.RESET_ALL}                           "
+                )
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
+                )
+                self.log(
+                    f"{Fore.BLUE+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
+                    f"{Fore.WHITE+Style.BRIGHT} {explorer}{tx_hash} {Style.RESET_ALL}"
                 )
 
-                balance = await self.get_balance(address, proxy)
-                if not balance: continue
-
-                if balance.get("message") == "Success":
-                    diam_tokens = balance.get("data", {}).get("balance")
-
-                    self.log(
-                        f"{Fore.BLUE+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
-                        f"{Fore.WHITE+Style.BRIGHT} {diam_tokens} DIAM {Style.RESET_ALL}"
-                    )
-
-                else:
-                    self.log(
-                        f"{Fore.BLUE+Style.BRIGHT}   Balance  :{Style.RESET_ALL}"
-                        f"{Fore.RED+Style.BRIGHT} Fetch DIAM Tokens Failed {Style.RESET_ALL}"
-                        f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
-                        f"{Fore.YELLOW+Style.BRIGHT} {balance['message']} {Style.RESET_ALL}"
-                    )
-                    continue
-                
-                if diam_tokens <= self.tf_amount:
-                    self.log(
-                        f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
-                        f"{Fore.RED+Style.BRIGHT} Insufficient DIAM Tokens Balance {Style.RESET_ALL}"
-                    )
-                    return
-                
-                await self.print_timer(63, 65)
-                
-                transfer = await self.perform_transfer(address, recepient, proxy)
-                if transfer:
-
-                    if transfer.get("message") == "Success":
-                        tx_hash = transfer.get("data", {}).get("transferData", {}).get("hash")
-                        tx_status = transfer.get("data", {}).get("transferData", {}).get("status")
-
-                        self.log(
-                            f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
-                            f"{Fore.GREEN+Style.BRIGHT} {tx_status} {Style.RESET_ALL}                           "
-                        )
-                        self.log(
-                            f"{Fore.BLUE+Style.BRIGHT}   Tx Hash  :{Style.RESET_ALL}"
-                            f"{Fore.WHITE+Style.BRIGHT} {tx_hash} {Style.RESET_ALL}"
-                        )
-                        self.log(
-                            f"{Fore.BLUE+Style.BRIGHT}   Explorer :{Style.RESET_ALL}"
-                            f"{Fore.WHITE+Style.BRIGHT} {self.EXPLORER}{tx_hash} {Style.RESET_ALL}"
-                        )
-                    else:
-                        self.log(
-                            f"{Fore.BLUE+Style.BRIGHT}   Status   :{Style.RESET_ALL}"
-                            f"{Fore.RED+Style.BRIGHT} Transfer Failed {Style.RESET_ALL}"
-                            f"{Fore.MAGENTA+Style.BRIGHT}-{Style.RESET_ALL}"
-                            f"{Fore.YELLOW+Style.BRIGHT} {transfer['message']} {Style.RESET_ALL}"
-                        )
+            await self.print_timer(63, 65)
 
     async def main(self):
         try:
-            with open('accounts.txt', 'r') as file:
-                accounts = [line.strip() for line in file if line.strip()]
-
-            proxy_choice, rotate_proxy = self.print_question()
+            accounts = self.load_accounts()
+            if not accounts:
+                print(f"{Fore.RED+Style.BRIGHT}No Accounts Loaded.{Style.RESET_ALL}")
+                return False
+            
+            self.print_question()
 
             while True:
-                use_proxy = True if proxy_choice == 1 else False
-
                 self.clear_terminal()
                 self.welcome()
                 self.log(
                     f"{Fore.GREEN + Style.BRIGHT}Account's Total: {Style.RESET_ALL}"
                     f"{Fore.WHITE + Style.BRIGHT}{len(accounts)}{Style.RESET_ALL}"
                 )
-
-                if use_proxy:
-                    await self.load_proxies()
+                
+                if self.USE_PROXY: self.load_proxies()
 
                 separator = "=" * 25
-                for idx, account in enumerate(accounts, start=1):
-                    if account:
-                        address = self.generate_address(account)
-                        self.log(
-                            f"{Fore.CYAN + Style.BRIGHT}{separator}[{Style.RESET_ALL}"
-                            f"{Fore.WHITE + Style.BRIGHT} {idx} {Style.RESET_ALL}"
-                            f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"
-                            f"{Fore.WHITE + Style.BRIGHT} {self.mask_account(address)} {Style.RESET_ALL}"
-                            f"{Fore.CYAN + Style.BRIGHT}]{separator}{Style.RESET_ALL}"
-                        )
+                for idx, private_key in enumerate(accounts, start=1):
+                    self.log(
+                        f"{Fore.CYAN + Style.BRIGHT}{separator}[{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {idx} {Style.RESET_ALL}"
+                        f"{Fore.CYAN + Style.BRIGHT}-{Style.RESET_ALL}"
+                        f"{Fore.WHITE + Style.BRIGHT} {len(accounts)} {Style.RESET_ALL}"
+                        f"{Fore.CYAN + Style.BRIGHT}]{separator}{Style.RESET_ALL}"
+                    )
 
-                        if not address:
-                            self.log(
-                                f"{Fore.CYAN + Style.BRIGHT}Status  :{Style.RESET_ALL}"
-                                f"{Fore.RED + Style.BRIGHT} Invalid Private Key or Library Version Not Supported {Style.RESET_ALL}"
-                            )
-                            continue
+                    address = self.generate_address(private_key)
+                    if not address: continue
 
-                        self.cookie_headers[address] = "access_token="
-                        self.device_id[address] = self.generate_device_id()
-                        user_agent = FakeUserAgent(browsers=["chrome"], os="windows").random
-
-                        self.HEADERS[address] = {
-                            "Accept": "application/json, text/plain, */*",
-                            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-                            "Access-Token": "key",
-                            "Origin": "https://campaign.diamante.io",
-                            "Referer": "https://campaign.diamante.io/",
-                            "Sec-Fetch-Dest": "empty",
-                            "Sec-Fetch-Mode": "cors",
-                            "Sec-Fetch-Site": "same-site",
-                            "User-Agent": user_agent
+                    if address not in self.accounts:
+                        self.accounts[address] = {
+                            "deviceId": self.generate_device_id()
                         }
-                        
-                        await self.process_accounts(address, use_proxy, rotate_proxy)
+
+                    self.log(
+                        f"{Fore.CYAN+Style.BRIGHT}Address :{Style.RESET_ALL}"
+                        f"{Fore.WHITE+Style.BRIGHT} {self.mask_account(address)} {Style.RESET_ALL}"
+                    )
+                    
+                    await self.process_accounts(address)
+                    await asyncio.sleep(random.uniform(2.0, 3.0))
 
                 self.log(f"{Fore.CYAN + Style.BRIGHT}={Style.RESET_ALL}"*72)
-                
+
                 delay = 24 * 60 * 60
                 while delay > 0:
                     formatted_time = self.format_seconds(delay)
@@ -630,20 +676,20 @@ class Diamante:
                     await asyncio.sleep(1)
                     delay -= 1
 
-        except FileNotFoundError:
-            self.log(f"{Fore.RED}File 'accounts.txt' Not Found.{Style.RESET_ALL}")
-            return
         except Exception as e:
-            self.log(f"{Fore.RED+Style.BRIGHT}Error: {e}{Style.RESET_ALL}")
             raise e
+        except asyncio.CancelledError:
+            raise
 
 if __name__ == "__main__":
+    bot = Diamante()
     try:
-        bot = Diamante()
         asyncio.run(bot.main())
     except KeyboardInterrupt:
         print(
             f"{Fore.CYAN + Style.BRIGHT}[ {datetime.now().astimezone(wib).strftime('%x %X %Z')} ]{Style.RESET_ALL}"
             f"{Fore.WHITE + Style.BRIGHT} | {Style.RESET_ALL}"
-            f"{Fore.RED + Style.BRIGHT}[ EXIT ] Diam Testnet - BOT{Style.RESET_ALL}                                       "                              
+            f"{Fore.RED + Style.BRIGHT}[ EXIT ] Diamante - BOT{Style.RESET_ALL}                                       "                              
         )
+    finally:
+        sys.exit(0)
